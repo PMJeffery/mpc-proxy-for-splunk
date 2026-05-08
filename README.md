@@ -2,6 +2,47 @@
 
 Give llama.cpp's `llama-server` the ability to query Splunk via MCP (Model Context Protocol) by routing requests through a lightweight Python bridge and an MCP proxy.
 
+If your AI Agent or LLM inference client only needs access to one MCP server, then this may not be for you.  If you have multiple MCP servers and need a MCP proxy for ease of use, management and security(ish) then this may help.
+
+Copy and pasting the MCP server JSON config from Splunk MCP server will not work with all LLM inference engines, so this was created to help remove the friction of using LLM inference engines like llama.cpp.  
+
+[MCP Proxy](https://github.com/sparfenyuk/mcp-proxy) is used to funnel MCP requests into a single endpoint from a LLM inference service/client. 
+
+`config.json` has a sample MCP Server configuration that was used for testing.  Remove MCP server you do not want or need.  Recommend keeping the Time MCP server as some LLMs don't understand time and are trained to use their internal knowledge of time events.  
+
+
+>    May 7, 2026 21:32:07 **User**: Tell me how many failed logins we had on the domain controller back in January. 
+
+>    May 7, 2026 21:32:09 **LLM**: ... (Checks January 2024) ... 
+
+Smaller and/or older LLMs struggle with time awareness and will use its last known date of traning for "current time".  
+If you see poor results with the LLM understanding time:
+1. Add "Always check the current time and date at the start of your conversation." to your system prompt or ask at the beginning of the conversation
+2. Find a LLM that can one-shot a SPL search understanding time variables.
+3. Create a Splunk Skill that the LLM can undestand that looks for the most recent events in an index.
+
+---
+
+## Table of Contents
+
+- [How It Works](#how-it-works)
+- [Files](#files)
+- [Key Code](#key-code)
+  - [`splunk_bridge.py` — `main()`](#splunk_bridgepy--main)
+  - [`config.json` — MCP server registry](#configjson--mcp-server-registry)
+  - [`start_mcp_proxy.sh`](#start_mcp_proxysh)
+- [How-To](#how-to)
+  - [Prerequisites](#prerequisites)
+  - [Step 1 — Configure the bridge](#step-1--configure-the-bridge)
+  - [Step 2 — (Optional) Adjust the server registry](#step-2--optional-adjust-the-server-registry)
+  - [Step 3 — Start the proxy](#step-3--start-the-proxy)
+  - [Step 4 — Point llama-server at the proxy](#step-4--point-llama-server-at-the-proxy)
+  - [Step 5 — Add MCP Servers to llama-server Web UI](#step-5--add-mcp-servers-to-llama-server-web-ui)
+  - [Step 6 — Verify end-to-end](#step-6--verify-end-to-end)
+- [Troubleshooting](#troubleshooting)
+- [Results](#results)
+- [License](#license)
+
 ---
 
 ## How It Works
@@ -106,12 +147,15 @@ The other three entries are optional convenience servers:
 
 ```bash
 uvx mcp-proxy --named-server-config config.json \
+              --host 0.0.0.0 \
               --allow-origin "*" \
               --port 8001 \
               --stateless 2>&1 | tee -a mcp-proxy.log
 ```
 
 - `--named-server-config config.json` — loads the server registry.
+- `--host 0.0.0.0` — allows all hosts to connect, change to IP as necessary for security
+- `--allow-origin "*"` allows CORS from any domain, change as necessary for security
 - `--port 8001` — the port `llama-server` connects to.
 - `--stateless` — no session state is kept between requests.
 - Output is appended to `mcp-proxy.log` for debugging.
@@ -170,18 +214,32 @@ tail -f mcp-proxy.log
 You should see lines like `Serving on http://0.0.0.0:8001`.
 
 ### Step 4 — Point llama-server at the proxy
-
-Start `llama-server` with the MCP endpoint:
+Start `llama-server` with  `--webui-mcp-proxy`:
+Example command:
 
 ```bash
-llama-server \
-  --model your-model.gguf \
-  --mcp-server http://localhost:8001
+llama.cpp/build/bin/llama-server \
+    --<insert your other paramenters>
+    --host 0.0.0.0 \
+    --port 8084 \
+    --webui-mcp-proxy \
 ```
 
 `llama-server` will discover the available tools (including Splunk) via the MCP capability negotiation handshake and can then issue queries to Splunk through normal tool-call requests.
 
-### Step 5 — Verify end-to-end
+
+### Step 5 — Add MCP Servers to llama server Web UI
+
+1. Open llama-server Web UI
+2. Left Nav Column -> MCP Servers -> Add New Server
+3. http://<MCP Proxy IP>:8001/servers/<MCP Server Name>/mcp
+
+![Adding MCP Server](screenshots/add_,mcp.png)
+
+You must toggle the MCP Server to be enabled, off by default.
+![Enable MCP Server](screenshots/llama-cpp_Splunk_MCP_Server_enabled.png)
+
+### Step 6 — Verify end-to-end
 
 A successful Splunk MCP call will:
 1. Appear in `mcp-proxy.log` as an inbound request routed to `splunk-mcp-server`.
@@ -201,6 +259,16 @@ A successful Splunk MCP call will:
 | No Splunk results | MCP not enabled in Splunk | Enable the MCP feature in Splunk and confirm `/services/mcp` responds |
 
 ---
+## Results
+Screenshots:
+
+![Verifying Splunk MCP Connection](screenshots/splunk-mcp-test1.png)
+
+![Splunk MCP Permission Check](screenshots/splunk-mcp-test2.png)
+
+![Results:](screenshots/splunk-mcp-test3.png)
+![](screenshots/splunk-mcp-test4.png)
+
 
 ## License
 
